@@ -11,6 +11,7 @@ using namespace std;
 using json = nlohmann::json;
 
 const char* gameAssemblyName = "GameAssembly";
+std::wstring RootDir;
 FARPROC GetModuleSymbolAddress(const char* module, const char* symbol)
 {
 	HMODULE moduleHandle = GetModuleHandleA(module);
@@ -26,6 +27,42 @@ FARPROC GetModuleSymbolAddress(const char* module, const char* symbol)
 	}
 	return funcPTR;
 }
+
+void wstring_replace(
+	std::wstring& s,
+	std::wstring const& toReplace,
+	std::wstring const& replaceWith
+) {
+	std::size_t pos = s.find(toReplace);
+	if (pos == std::wstring::npos) return;
+	s.replace(pos, toReplace.length(), replaceWith);
+}
+
+uint64_t okernel32_CreateFileW = NULL;
+NOINLINE HANDLE __cdecl Hook_kernel32_CreateFileW(
+	_In_ LPCWSTR lpFileName,
+	_In_ DWORD dwDesiredAccess,
+	_In_ DWORD dwShareMode,
+	_In_opt_ LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+	_In_ DWORD dwCreationDisposition,
+	_In_ DWORD dwFlagsAndAttributes,
+	_In_opt_ HANDLE hTemplateFile
+)
+{
+	auto funcPTR = PLH::FnCast(okernel32_CreateFileW, Hook_kernel32_CreateFileW);
+	auto filepath = std::filesystem::path(lpFileName).lexically_normal().wstring();
+	if (filepath.find(RootDir) != std::wstring::npos)
+	{
+		wstring_replace(filepath, L"Rune Factory 5_Data", L"mods");
+		if (std::filesystem::exists(filepath))
+		{
+			wprintf(L"Patching file: %s\n", filepath.c_str());
+			return funcPTR(filepath.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
+		}
+	}
+	return funcPTR(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
+}
+
 
 void LoadPlugins()
 {
@@ -150,6 +187,7 @@ NOINLINE HMODULE __cdecl Hook_LoadLibraryW(LPCWSTR lpLibFileName)
 void Main()
 {
 	new_console();
+	RootDir = std::filesystem::current_path().lexically_normal().wstring();
 	PLH::CapstoneDisassembler dis(PLH::Mode::x64);
 	Detour_LoadLibraryW = new PLH::x64Detour(
 		(char*)LoadLibraryW,
@@ -158,4 +196,12 @@ void Main()
 		dis
 	);
 	Detour_LoadLibraryW->hook();
+
+	auto detour_kernel32_CreateFileW = new PLH::x64Detour(
+		reinterpret_cast<char*>((GetModuleSymbolAddress("kernel32", "CreateFileW"))),
+		reinterpret_cast<char*>(&Hook_kernel32_CreateFileW),
+		&okernel32_CreateFileW,
+		dis
+	);
+	detour_kernel32_CreateFileW->hook();
 }
