@@ -187,7 +187,14 @@ NOINLINE HMODULE __cdecl Hook_LoadLibraryW(LPCWSTR lpLibFileName)
 void Main()
 {
 	new_console();
+
 	RootDir = std::filesystem::current_path().lexically_normal().wstring();
+
+	if (!std::filesystem::exists("plugins"))
+		std::filesystem::create_directory("plugins");
+	if (!std::filesystem::exists("mods"))
+		std::filesystem::create_directory("mods");
+
 	PLH::CapstoneDisassembler dis(PLH::Mode::x64);
 	Detour_LoadLibraryW = new PLH::x64Detour(
 		(char*)LoadLibraryW,
