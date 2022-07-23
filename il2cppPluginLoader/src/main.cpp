@@ -24,7 +24,6 @@ BOOL InjectDll(HANDLE hProcess, LPCSTR lpFileName)
 {
     LPVOID pAddress;
     HANDLE hThread;
-    DWORD exitCode;
     auto tSize = strlen(lpFileName) + 1;
     pAddress = VirtualAllocEx(hProcess, NULL, tSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 
@@ -40,7 +39,7 @@ BOOL InjectDll(HANDLE hProcess, LPCSTR lpFileName)
         return false;
     }
 
-    hThread = CreateRemoteThread(hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)&LoadLibraryA, pAddress, 0, NULL);
+    hThread = CreateRemoteThread(hProcess, NULL, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(&LoadLibraryA), pAddress, 0, NULL);
 
     if (!hThread)
     {
@@ -49,15 +48,8 @@ BOOL InjectDll(HANDLE hProcess, LPCSTR lpFileName)
     }
 
     WaitForSingleObject(hThread, INFINITE);
-    GetExitCodeThread(hThread, &exitCode);
     VirtualFreeEx(hProcess, pAddress, 0, MEM_RELEASE);
     CloseHandle(hThread);
-
-    if (!exitCode)
-    {
-        printf("Exited with error code: %d\n", GetLastError());
-        return false;
-    }
 
     return true;
 }
@@ -66,11 +58,8 @@ int main()
 {
     PROCESS_INFORMATION ProcessInformation;
     STARTUPINFOA StartupInfo;
-    DWORD cb;
 
-    cb = sizeof(STARTUPINFOA);
-    ZeroMemory(&StartupInfo, cb);
-    StartupInfo.cb = cb;
+    ZeroMemory(&StartupInfo, sizeof(STARTUPINFOA));
 
     const char* process = "Rune Factory 5.exe";
     if (!CreateProcessA(process, NULL, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &StartupInfo, &ProcessInformation)) {
@@ -86,7 +75,9 @@ int main()
     {
         if (!InjectDll(ProcessInformation.hProcess, modules[i]))
         {
-            TerminateProcess(ProcessInformation.hProcess, GetLastError());
+            auto error = GetLastError();
+            TerminateProcess(ProcessInformation.hProcess, error);
+            printf("Exited with error code(%d)\n", error);
             printf("Couldn't inject `%s`\n", modules[i]);
             return 0;
         }

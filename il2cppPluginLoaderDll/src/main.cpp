@@ -1,17 +1,16 @@
 #include "pch.h"
 #include <string>
 #include <filesystem>
-#include <nlohmann/json.hpp>
 #include <fstream>
 #include <polyhook2/Detour/x64Detour.hpp>
 #include <polyhook2/CapstoneDisassembler.hpp>
 #include <polyhook2/PE/IatHook.hpp>
 
 using namespace std;
-using json = nlohmann::json;
 
 const char* gameAssemblyName = "GameAssembly";
 std::wstring RootDir;
+
 FARPROC GetModuleSymbolAddress(const char* module, const char* symbol)
 {
 	HMODULE moduleHandle = GetModuleHandleA(module);
@@ -63,7 +62,6 @@ NOINLINE HANDLE __cdecl Hook_kernel32_CreateFileW(
 	return funcPTR(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
 }
 
-
 void LoadPlugins()
 {
 	HANDLE process = GetCurrentProcess();
@@ -86,62 +84,10 @@ void LoadPlugins()
 	}
 }
 
-extern __declspec(dllexport) void ResolveGameAssemblyImports(HMODULE module)
-{
-	//https://www.ired.team/offensive-security/code-injection-process-injection/import-adress-table-iat-hooking
-	ifstream file("GameAssemblySymbols.json");
-	json data = json::parse(file);
-
-	PIMAGE_DOS_HEADER dosHeaders = (PIMAGE_DOS_HEADER)module;
-	PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((DWORD_PTR)module + dosHeaders->e_lfanew);
-
-	PIMAGE_IMPORT_DESCRIPTOR importDescriptor = NULL;
-	IMAGE_DATA_DIRECTORY importsDirectory = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-	importDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)(importsDirectory.VirtualAddress + (DWORD_PTR)module);
-	LPCSTR libraryName = NULL;
-	HMODULE library = NULL;
-	PIMAGE_IMPORT_BY_NAME function = NULL;
-
-	while (importDescriptor->Name != NULL)
-	{
-		libraryName = (LPCSTR)importDescriptor->Name + (DWORD_PTR)module;
-		if (libraryName == gameAssemblyName)
-		{
-			PIMAGE_THUNK_DATA originalFirstThunk = NULL, firstThunk = NULL;
-			originalFirstThunk = (PIMAGE_THUNK_DATA)((DWORD_PTR)module + importDescriptor->OriginalFirstThunk);
-			firstThunk = (PIMAGE_THUNK_DATA)((DWORD_PTR)module + importDescriptor->FirstThunk);
-
-			while (originalFirstThunk->u1.AddressOfData != NULL)
-			{
-				function = (PIMAGE_IMPORT_BY_NAME)((DWORD_PTR)module + originalFirstThunk->u1.AddressOfData);
-				// find MessageBoxA address
-				// Load JSON and compare with function
-				auto symbol = data[std::string(function->Name)];
-				if (!symbol.is_null())
-				{
-					SIZE_T bytesWritten = 0;
-					DWORD oldProtect = 0;
-					VirtualProtect((LPVOID)(&firstThunk->u1.Function), 8, PAGE_READWRITE, &oldProtect);
-
-					// Resolve imported function with real address
-					firstThunk->u1.Function = symbol.get<int64_t>();
-
-
-				}
-				++originalFirstThunk;
-				++firstThunk;
-			}
-		}
-
-		importDescriptor++;
-	}
-	return;
-}
-
 // Helper function to open a new console window and redirect stdout there
 void new_console() {
 	AllocConsole();
-	freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
+	freopen_s(reinterpret_cast<FILE**>(stdout), "CONOUT$", "w", stdout);
 }
 
 uint64_t oil2cpp_thread_attach;
@@ -168,10 +114,11 @@ NOINLINE HMODULE __cdecl Hook_LoadLibraryW(LPCWSTR lpLibFileName)
 	if (std::wstring(lpLibFileName).compare(wcstring))
 	{
 		Detour_LoadLibraryW->unHook();
+		LoadLibraryW(wcstring);
 		PLH::CapstoneDisassembler dis(PLH::Mode::x64);
 		Detour_il2cpp_thread_attach = new PLH::x64Detour(
-			(char*)GetModuleSymbolAddress(moduleName.c_str(), "il2cpp_thread_attach"),
-			(char*)&Hook_il2cpp_thread_attach,
+			reinterpret_cast<char*>(GetModuleSymbolAddress(moduleName.c_str(), "il2cpp_thread_attach")),
+			reinterpret_cast<char*>(&Hook_il2cpp_thread_attach),
 			&oil2cpp_thread_attach,
 			dis
 		);
@@ -184,11 +131,11 @@ NOINLINE HMODULE __cdecl Hook_LoadLibraryW(LPCWSTR lpLibFileName)
 	}
 }
 
-void Main()
+void Initialize()
 {
 	new_console();
 
-	RootDir = std::filesystem::current_path().lexically_normal().wstring();
+	RootDir = std::filesystem::absolute("Rune Factory 5_Data").lexically_normal().wstring();
 
 	if (!std::filesystem::exists("plugins"))
 		std::filesystem::create_directory("plugins");
@@ -197,8 +144,8 @@ void Main()
 
 	PLH::CapstoneDisassembler dis(PLH::Mode::x64);
 	Detour_LoadLibraryW = new PLH::x64Detour(
-		(char*)LoadLibraryW,
-		(char*)&Hook_LoadLibraryW,
+		reinterpret_cast<char*>(LoadLibraryW),
+		reinterpret_cast<char*>(&Hook_LoadLibraryW),
 		&oLoadLibraryW,
 		dis
 	);
